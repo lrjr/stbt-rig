@@ -109,7 +109,8 @@ def main(argv):
         "--mode=interactive".""")
 
     parser.add_argument(
-        "--mode", choices=["auto", "interactive", "jenkins"], default="auto",
+        "--mode", choices=["auto", "interactive", "jenkins", "bamboo"],
+        default="auto",
         help="""See the sections INTERACTIVE MODE and JENKINS INTEGRATION
         below. This defaults to "auto", which detects whether or not it is
         being run inside Jenkins.""")
@@ -188,6 +189,8 @@ def main(argv):
     if args.mode == "auto":
         if "JENKINS_HOME" in os.environ:
             args.mode = "jenkins"
+        elif "bamboo_agentWorkingDirectory" in os.environ:
+            args.mode = "bamboo"
         else:
             args.mode = "interactive"
 
@@ -254,7 +257,9 @@ def cmd_run(args, node):
         if args.mode == "interactive":
             testpack = TestPack(remote=args.git_remote)
             commit_sha = testpack.push_git_snapshot(branch_name)
-        elif args.mode == "jenkins":
+        elif args.mode in ["jenkins", "bamboo"]:
+            # We assume that when in ci we're not in the git repo of the
+            # test-pack, so run tests from master
             commit_sha = "master"
         else:
             assert False, "Unreachable: Unknown mode %r" % args.mode
@@ -266,6 +271,8 @@ def cmd_run(args, node):
             category = branch_name
         elif args.mode == "jenkins":
             category = os.environ["JOB_NAME"]
+        elif args.mode == "bamboo":
+            category = os.environ["bamboo_shortJobName"]
         else:
             assert False, "Unreachable: Unknown mode %r" % args.mode
 
@@ -278,6 +285,19 @@ def cmd_run(args, node):
                   "SVN_REVISION"]:
             if os.environ.get(v):
                 tags["jenkins/%s" % v] = os.environ[v]
+    elif args.mode == "bamboo":
+        # Record Bamboo environment variables as tags.
+        # bamboo.planRepository.revision will refer to the repo of the STB
+        # software being tested in CI, rather than the test-pack repo.
+        # See the complete list of bamboo variables here:
+        # https://confluence.atlassian.com/bamboo/bamboo-variables-289277087.html
+        for v in ["bamboo.buildResultKey",
+                  "bamboo.planRepository.branchName",
+                  "bamboo.planRepository.revision",
+                  "bamboo.resultsUrl",
+                  "bamboo.shortJobName"]:
+            if os.environ.get(v):
+                tags["%s" % v] = os.environ[v.replace('.', '_')]
     for tag in args.tags:
         try:
             name, value = tag.split("=", 1)
@@ -300,7 +320,7 @@ def cmd_run(args, node):
             print ""
             print result.json["triage_url"]
             result.print_logs()
-    elif args.mode == "jenkins":
+    elif args.mode == "jenkins" or args.mode == "bamboo":
         # Record results in XML format for the Jenkins JUnit plugin
         results_xml = job.list_results_xml()
         with open("stbt-results.xml", "w") as f:
@@ -332,6 +352,16 @@ def iter_portal_auth_tokens(portal_url, portal_auth_file, mode):
 
     if mode == "jenkins":
         token = os.environ.get("STBT_AUTH_TOKEN")
+        if token:
+            yield token
+        else:
+            die("No access token specified. Use the Jenkins Credentials "
+                "Binding plugin to provide the access token in the "
+                "environment variable STBT_AUTH_TOKEN")
+        return
+    
+    if mode == "bamboo":
+        token = os.environ.get("bamboo_STBT_AUTH_TOKEN")
         if token:
             yield token
         else:
